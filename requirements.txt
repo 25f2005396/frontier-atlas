@@ -1,0 +1,15 @@
+httpx[http2]
+aiohttp
+pydantic>=2
+tenacity
+rapidfuzz
+structlog
+python-dotenv
+feedparser
+beautifulsoup4
+lxml
+dateparser
+playwright
+gspread
+google-auth
+pytest
