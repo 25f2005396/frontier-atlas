@@ -2,6 +2,7 @@ import asyncio
 import json
 import random
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -59,6 +60,8 @@ def default_providers() -> list[Provider]:
                  config.GEMINI_MODEL, config.GEMINI_API_KEY, 6000),
         Provider("groq", "openai", "https://api.groq.com/openai/v1",
                  config.GROQ_MODEL, config.GROQ_API_KEY, 3000),
+        Provider("groq-2", "openai", "https://api.groq.com/openai/v1",
+                 config.GROQ_MODEL_2, config.GROQ_API_KEY, 3000),
         Provider("deepseek", "openai", "https://api.deepseek.com",
                  config.DEEPSEEK_MODEL, config.DEEPSEEK_API_KEY, 6000),
     ]
@@ -90,14 +93,17 @@ def _retry_after(resp: httpx.Response) -> float | None:
 
 class LLMOrchestrator:
     def __init__(self, providers: list[Provider] | None = None, concurrency: int = 8,
-                 max_retries: int = 5, base_delay: float = 1.0, max_delay: float = 60.0,
-                 max_shrinks: int = 3, timeout: float = 60.0):
+                 max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 30.0,
+                 max_shrinks: int = 3, timeout: float = 60.0,
+                 cooldown: float = 15.0, max_rounds: int = 8):
         self.providers = providers if providers is not None else default_providers()
         if not self.providers:
             raise RuntimeError("No LLM API keys found. Fill GEMINI_API_KEY / GROQ_API_KEY in .env")
         self._sem = asyncio.Semaphore(concurrency)
         self.max_retries, self.base_delay, self.max_delay = max_retries, base_delay, max_delay
         self.max_shrinks, self.timeout = max_shrinks, timeout
+        self.cooldown, self.max_rounds = cooldown, max_rounds
+        self._cool: dict[str, float] = {}      # provider name -> monotonic time it is usable again
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self):
@@ -133,6 +139,8 @@ class LLMOrchestrator:
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "response_format": {"type": "json_object"},
             }
+            if "gpt-oss" in p.model:
+                body["reasoning_effort"] = "low"   # fewer hidden reasoning tokens per call
         async with self._sem:
             try:
                 resp = await self._http().post(url, headers=headers, json=body)
@@ -168,22 +176,40 @@ class LLMOrchestrator:
         raise RateLimited(p.name)
 
     async def extract(self, text: str, system: str, build_user: Callable[[str], str]) -> Extraction:
-        errors = []
-        for p in self.providers:
-            budget = p.max_tokens
-            for _ in range(self.max_shrinks + 1):
-                payload = truncate_to_budget(text, budget)
-                try:
-                    raw = await self._with_backoff(p, system, build_user(payload))
-                    return Extraction(parse_json(raw), p.name, payload)
-                except PayloadTooLarge:
-                    budget //= 2
-                    log.warning("payload_too_large", provider=p.name, new_budget=budget)
-                    continue
-                except (RateLimited, ProviderError, ValueError) as exc:
-                    errors.append(f"{p.name}: {exc!r}")
-                    log.warning("provider_failed", provider=p.name, error=repr(exc))
-                    break
-            else:
-                errors.append(f"{p.name}: still too large after shrinking")
-        raise AllProvidersFailed("; ".join(errors))
+        errors: list[str] = []
+        for _round in range(self.max_rounds):
+            now = time.monotonic()
+            available = [p for p in self.providers if self._cool.get(p.name, 0) <= now]
+            if not available:
+                # every provider is cooling down: wait for the earliest one
+                wait = max(min(self._cool.values()) - now, 0.5)
+                await asyncio.sleep(wait)
+                continue
+
+            rate_limited = False
+            for p in available:
+                budget = p.max_tokens
+                for _ in range(self.max_shrinks + 1):
+                    payload = truncate_to_budget(text, budget)
+                    try:
+                        raw = await self._with_backoff(p, system, build_user(payload))
+                        return Extraction(parse_json(raw), p.name, payload)
+                    except PayloadTooLarge:
+                        budget //= 2
+                        log.warning("payload_too_large", provider=p.name, new_budget=budget)
+                        continue
+                    except RateLimited as exc:
+                        rate_limited = True
+                        self._cool[p.name] = time.monotonic() + self.cooldown
+                        errors.append(f"{p.name}: {exc!r}")
+                        log.warning("provider_cooldown", provider=p.name, seconds=self.cooldown)
+                        break
+                    except (ProviderError, ValueError) as exc:
+                        errors.append(f"{p.name}: {exc!r}")
+                        log.warning("provider_failed", provider=p.name, error=repr(exc))
+                        break
+                else:
+                    errors.append(f"{p.name}: still too large after shrinking")
+            if not rate_limited:
+                break      # nothing left to wait for: all remaining failures are permanent
+        raise AllProvidersFailed("; ".join(errors[-6:]))

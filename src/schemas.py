@@ -46,6 +46,7 @@ class ProductContent(BaseModel):
     startupName: str
     productName: str
     pricingModel: Optional[PricingModel] = None
+    pricing_evidence: Optional[str] = None
 
 
 class ProductRecord(BaseModel):
@@ -83,6 +84,7 @@ class JobContent(BaseModel):
     date: datetime
     is_remote: bool
     role_family: str
+    date_source: str = "source_field"
 
 
 class JobRecord(BaseModel):
@@ -98,6 +100,8 @@ class NewsContent(BaseModel):
     title: str
     published_at: datetime
     full_text: str
+    date_source: str = "source_field"
+    text_source: str = "article_page"
 
 
 class NewsRecord(BaseModel):
