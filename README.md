@@ -8,17 +8,17 @@ The main rule I followed while building it: **nothing gets invented.** Every rec
 
 The pipeline collected data across five areas of the AI ecosystem.
 
-**Startups — 1,500 records**
+**Startups: 1,500 records**
 
 Collected from the Y Combinator directory using the `yc-oss` JSON dataset and filtered for AI-related companies.
 
-**Products — 1,102 records**
+**Products: 1,102 records**
 
 Collected from startup homepages and pricing pages. Gemini and Groq are used to extract product information, with a grounding check against the original page text.
 
-**Research papers — 1,000 records**
+**Research papers: 1,000 records**
 
-Collected from the arXiv API. The GitHub REST API is used to retrieve live repository star counts where a GitHub link is available.
+Collected from the arXiv API. The GitHub REST API is used to retrieve live repository star counts where a GitHub link is available. Papers with Code was not used as a source, so arXiv is the only paper source, and each GitHub repository comes from the paper's own abstract or comments.
 
 **Jobs**
 
@@ -28,7 +28,7 @@ Collected from Greenhouse, Ashby, Lever, RemoteOK and Remotive. Only listings fr
 
 Collected through RSS feeds from TechCrunch, The Verge, MIT Technology Review, Ars Technica and Wired. Articles are filtered to the previous 24 hours.
 
-The pipelines save records as JSONL files. The exporter in `src/export/csv_export.py` converts them into six CSV files for the Google Sheets tabs. Importing these CSV files into Google Sheets is currently a manual step.
+The pipelines save records as JSONL files. The exporter in `src/export/csv_export.py` converts them into six CSV files, one per tab of the output sheet. The script `src/export/sheets_upload.py` then writes those CSVs to a Google Sheet through a service account. It clears and rewrites each tab, so rerunning it replaces the previous contents.
 
 ## A few things worth knowing
 
@@ -36,17 +36,19 @@ The pipelines save records as JSONL files. The exporter in `src/export/csv_expor
 
 Out of the 1,000 collected papers, 850 have a phrase such as "code is available at" shortly before the GitHub link. These are marked `github_link_confidence = high`.
 
-The remaining 150 are marked `low` because the repository is mentioned in the abstract, but it may be a tool used by the paper rather than its own implementation. This confidence field is retained in the export.
+The remaining 150 are marked `low` because the repository is mentioned in the abstract, but it may be a tool used by the paper rather than its own implementation. This confidence field is kept in the export.
 
 **Product extraction**
 
 Of the 1,102 collected product records, 589 contain a pricing model. Each pricing entry also stores the sentence from the source page that supports it. If pricing information is not available on the page, the field is left empty rather than guessed.
 
+A separate check on lowercased (startup, product) pairs found 1,102 distinct pairs among the 1,102 records, so there were no duplicates.
+
 **Product page fetching**
 
-Of the 1,102 product pages, 1,096 were fetched using async HTTP and 6 through the Playwright browser fallback.
+Of the 1,102 product records, 1,096 came from pages fetched with async HTTP and 6 from the Playwright browser fallback.
 
-In a separate test involving 15 sites that regular HTTP could not read because of 403 responses or JavaScript-rendered content, the browser fallback recovered 6. Four remained blocked and were left alone.
+In a separate test on 15 sites that regular HTTP could not read because of 403 responses or JavaScript-rendered content, the browser fallback recovered 6. Four remained blocked and were left alone.
 
 **Deduplication across runs**
 
@@ -78,6 +80,9 @@ JSONL storage
    |
    v
 CSV export
+   |
+   v
+Google Sheets upload (service account)
 ```
 
 **HTTP client** (`src/utils/http.py`)
@@ -131,6 +136,10 @@ For a distributed deployment, the architecture document proposes replacing this 
 
 An asynchronous Playwright pool is used for pages that return 403 responses or contain too little text when fetched using regular HTTP.
 
+**Sheets upload** (`src/export/sheets_upload.py`)
+
+Reads the six CSV files from `data/output/export/` and writes them to the tabs `Startups`, `Products`, `Research Papers`, `Jobs`, `News` and `Entity Mapping Log`. Values are written as raw text and numbers, so nothing in a cell is evaluated as a formula. The Sheet must be shared with the service account's email address as an Editor.
+
 ## Freshness
 
 Items with a source date must fall within the previous 24 hours.
@@ -171,8 +180,9 @@ Fill in the required values in `.env`:
 - `GROQ_API_KEY` and `GEMINI_API_KEY` are used by the LLM provider chain.
 - `DEEPSEEK_API_KEY` is optional.
 - `GEMINI_MODEL`, `GROQ_MODEL`, `GROQ_MODEL_2` and `DEEPSEEK_MODEL` can be changed when a provider retires or replaces a model.
+- `GOOGLE_SHEETS_CREDENTIALS` is the path to a Google service account key file (for example `credentials.json`). `GOOGLE_SHEET_ID` is the ID or full URL of the target Google Sheet. Both are needed only for the upload step.
 
-Do not commit `.env` or API credentials to the repository.
+Do not commit `.env`, `credentials.json` or any API credentials to the repository. Both are listed in `.gitignore`.
 
 ## Running it
 
@@ -185,11 +195,12 @@ python -m src.pipeline.products --target 1100 --workers 4 --llm-concurrency 1 --
 python -m src.pipeline.products_browser --limit 60
 python -m src.pipeline.signals --reset-seen
 python -m src.export.csv_export
+python -m src.export.sheets_upload
 ```
 
 The products pipeline is resumable. If a run stops because of rate limits or another interruption, running the same command again continues from the previously saved progress.
 
-The `signals --reset-seen` command resets the seen-set state. Use it only when a fresh collection is intended and after checking its effect on the existing deduplication history. Run the signals pipeline and CSV export close to submission time so that the jobs and news datasets reflect the latest 24-hour window.
+The `signals --reset-seen` command clears the seen-set and overwrites the jobs and news files. Use it only when a fresh collection is intended. Run the signals pipeline, the CSV export and the Sheets upload back to back, so the jobs and news tabs reflect the latest 24-hour window.
 
 ## Project layout
 
@@ -200,7 +211,7 @@ src/
   resolver/   entity resolver
   pipeline/   papers, startups, products, products_browser, signals
   utils/      http, dates, seen, robots, text, logging
-  export/     csv_export
+  export/     csv_export, sheets_upload
 
 scripts/      helper scripts for checking source endpoints
 data/seed/    the 50-startup seed list
@@ -216,7 +227,7 @@ docs/         architecture notes (PDF is in the repository root)
 - All startup records come from the Y Combinator directory. The AI filter is deliberately broad, so some borderline companies may be included.
 - GitHub links for research papers are extracted from their abstracts. Low-confidence links may point to tools mentioned by the paper rather than code written for it.
 - Some websites block even browser-based requests. These are logged with a reason and skipped rather than bypassed.
-- The repository generates CSV files but does not automatically upload them to Google Sheets. Importing the files into the Sheet is a manual step.
+- The Sheets upload is a manual command. It is not scheduled, so the Sheet only changes when the upload is run.
 - The 500,000+ record scale described in `architecture.pdf` is a design target, not a benchmark. The current implementation was tested on a dataset containing a few thousand records.
 
 ## Author

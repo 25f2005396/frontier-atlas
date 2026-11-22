@@ -5,3 +5,5 @@ __pycache__/
 data/output/
 credentials*.json
 .pytest_cache/
+
+credentials.json
