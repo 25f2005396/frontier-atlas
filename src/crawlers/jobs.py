@@ -6,8 +6,8 @@ from src.utils.logging import get_logger
 
 log = get_logger("jobs")
 
-GREENHOUSE = {"anthropic": "Anthropic", "databricks": "Databricks", "scaleai": "Scale AI", "stabilityai": "Stability AI"}
-ASHBY = {"openai": "OpenAI", "cohere": "Cohere", "perplexity": "Perplexity", "runway": "Runway"}
+GREENHOUSE = {"anthropic": "Anthropic", "databricks": "Databricks", "scaleai": "Scale AI", "stabilityai": "Stability AI", "togetherai": "Together AI"}
+ASHBY = {"openai": "OpenAI", "cohere": "Cohere", "perplexity": "Perplexity", "runway": "Runway", "elevenlabs": "ElevenLabs", "modal": "Modal", "replit": "Replit", "sierra": "Sierra", "harvey": "Harvey"}
 LEVER = {"palantir": "Palantir"}
 
 AI_RE = re.compile(r"\b(ai|a\.i\.|ml|machine learning|llm|llms|deep learning|nlp|computer vision|"
